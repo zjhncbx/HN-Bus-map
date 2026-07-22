@@ -93,17 +93,20 @@
                 searcher.search(searchName, function (status, result) {
                     if (status === 'complete' && result.info === 'OK') {
                         Search._handleResult(result, item);
+                        _pendingCount--;
+                        Search._checkComplete();
                     } else {
-                        // AMap 查询失败，尝试 busApi 兜底
+                        // AMap 查询失败，尝试 busApi 兜底（异步）
+                        // 注意：_pendingCount 由 fallback 回调管理，不在此处递减
                         Search._fallbackBusApi(item, function (success) {
                             if (!success) {
                                 _failedLines.push(item.display);
                                 console.warn('查询失败: ' + item.display);
                             }
+                            _pendingCount--;
+                            Search._checkComplete();
                         });
                     }
-                    _pendingCount--;
-                    Search._checkComplete();
                 });
             });
         } catch (e) {

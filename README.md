@@ -72,9 +72,6 @@ HNBus/
 │   ├── ui.js                     # UI面板/事件委托/分类折叠/移动端
 │   ├── search.js                 # 搜索编排/双源兜底/busApi富化
 │   └── app.js                    # 主入口/错误处理/URL参数
-├── hnbus.py                      # Python 数据采集工具
-├── quick_scan.py                 # 快速线路扫描脚本
-├── bus_lines_found.json          # 扫描结果（103条线路）
 ├── .gitignore
 └── README.md
 ```
