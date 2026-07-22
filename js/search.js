@@ -8,6 +8,7 @@
 
     var _pendingCount = 0;
     var _totalCount = 0;
+    var _successCount = 0;   // 显式追踪成功绘制的线路
     var _failedLines = [];   // 收集失败的线路名称
     var _filteredLines = []; // 在海宁境外被过滤的线路
 
@@ -43,6 +44,7 @@
 
         _pendingCount = 0;
         _totalCount = checkedLines.length;
+        _successCount = 0;
         _failedLines = [];
         _filteredLines = [];
 
@@ -92,14 +94,30 @@
 
                 searcher.search(searchName, function (status, result) {
                     if (status === 'complete' && result.info === 'OK') {
-                        Search._handleResult(result, item);
+                        if (!Search._handleResult(result, item)) {
+                            // 高德返回了结果但数据无效（空路径等），走 busApi 兜底
+                            Search._fallbackBusApi(item, function (success) {
+                                if (success) {
+                                    _successCount++;
+                                } else {
+                                    _failedLines.push(item.display);
+                                    console.warn('查询失败(AMap空结果): ' + item.display);
+                                }
+                                _pendingCount--;
+                                Search._checkComplete();
+                            });
+                            return;
+                        }
+                        _successCount++;
                         _pendingCount--;
                         Search._checkComplete();
                     } else {
                         // AMap 查询失败，尝试 busApi 兜底（异步）
                         // 注意：_pendingCount 由 fallback 回调管理，不在此处递减
                         Search._fallbackBusApi(item, function (success) {
-                            if (!success) {
+                            if (success) {
+                                _successCount++;
+                            } else {
                                 _failedLines.push(item.display);
                                 console.warn('查询失败: ' + item.display);
                             }
@@ -124,7 +142,7 @@
      */
     Search._handleResult = function (data, item) {
         var lineArr = data.lineInfo;
-        if (!lineArr || !lineArr.length) return;
+        if (!lineArr || !lineArr.length) return false;
 
         var category = item.category;
 
@@ -133,13 +151,13 @@
         var pathArr = lineInfo.path;
         var stops = lineInfo.via_stops;
 
-        if (!pathArr || !pathArr.length) return;
+        if (!pathArr || !pathArr.length) return false;
 
         // 海宁境内过滤
         if (!Search._hasStationInHaining(stops)) {
             _filteredLines.push(item.display + '(' + lineInfo.name + ')');
             console.warn('线路 ' + lineInfo.name + ' 不在海宁境内，已过滤');
-            return;
+            return false;
         }
 
         var color = HNBus.Data.getLineColor(lineInfo.name, category.id);
@@ -173,6 +191,8 @@
         if (category.id !== 'metro') {
             Search._enrichFromBusApi(item, lineInfo, meta);
         }
+
+        return true;
     };
 
     /**
@@ -350,9 +370,8 @@
 
             var failedCount = _failedLines.length;
             var filteredCount = _filteredLines.length;
-            var successCount = _totalCount - failedCount - filteredCount;
 
-            if (successCount === 0 && _totalCount > 0) {
+            if (_successCount === 0 && _totalCount > 0) {
                 var msg = '未找到匹配的公交线路';
                 if (_failedLines.length > 0) {
                     msg += '，失败: ' + _failedLines.slice(0, 8).join('、');
@@ -360,7 +379,7 @@
                 }
                 HNBus.Utils.showToast(msg, 'error', 5000);
             } else if (failedCount > 0 || filteredCount > 0) {
-                var parts = ['成功 ' + successCount + ' 条'];
+                var parts = ['成功 ' + _successCount + ' 条'];
                 if (failedCount > 0) {
                     parts.push('失败: ' + _failedLines.slice(0, 5).join('、'));
                     if (_failedLines.length > 5) parts[parts.length - 1] += '等' + _failedLines.length + '条';
@@ -371,7 +390,7 @@
                 }
                 HNBus.Utils.showToast(parts.join('，'), 'warning', 6000);
             } else {
-                HNBus.Utils.showToast('成功查询 ' + successCount + ' 条线路', 'success');
+                HNBus.Utils.showToast('成功查询 ' + _successCount + ' 条线路', 'success');
             }
 
             // 显示图例
