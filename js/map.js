@@ -213,10 +213,14 @@
         var stops = meta.stops || [];
         var source = meta.source || '';
 
-        // 标题行：线路名(起讫)
+        // 标题行：线路名(起讫)——避免已含括号时重复
         var titleName = name;
         if (startStation && endStation) {
-            titleName = name + '(' + startStation + '--' + endStation + ')';
+            var alreadyHasParen = name.indexOf('(' + startStation) !== -1 ||
+                                  name.indexOf(startStation + '--') !== -1;
+            if (!alreadyHasParen) {
+                titleName = name + '(' + startStation + '--' + endStation + ')';
+            }
         }
 
         var html = '<div class="info-window-content" style="max-width:340px;max-height:420px;overflow-y:auto;">';
@@ -259,8 +263,8 @@
                 html += '<span class="station-item">...等' + shiftTimes.length + '班</span>';
             }
             html += '</div>';
-        } else if (stime && etime) {
-            // 无时刻表但有首末班：提示
+        } else if (stime && etime && meta.categoryLabel !== '轨道交通') {
+            // 无时刻表但有首末班：提示（轨道交通除外）
             html += '<p style="color:#999;font-size:0.75rem;margin:4px 0;">时刻表加载中...</p>';
         }
 

@@ -185,6 +185,7 @@
             checkbox.value = bus.value;
             checkbox.setAttribute('data-category', category.id);
             checkbox.setAttribute('data-display', bus.display);
+            if (bus.gprsId) checkbox.setAttribute('data-gprsid', bus.gprsId);
             label.appendChild(checkbox);
             label.appendChild(document.createTextNode(bus.display));
             body.appendChild(label);
@@ -394,6 +395,7 @@
                         results.push({
                             value: bus.value,
                             display: bus.display,
+                            gprsId: bus.gprsId,
                             category: cat
                         });
                     }
@@ -411,6 +413,7 @@
             checked.push({
                 value: cb.value,
                 display: cb.getAttribute('data-display') || cb.value,
+                gprsId: cb.getAttribute('data-gprsid') || undefined,
                 category: cat || { id: 'other', searchCity: '嘉兴', searchPrefix: '' }
             });
         });
