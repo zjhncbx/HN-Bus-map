@@ -112,11 +112,11 @@
                         bounds[i] = [bounds[i]];
                     }
                     _boundaryPolygon = new AMap.Polygon({
-                        strokeWeight: 1,
+                        strokeWeight: 1.5,
                         path: bounds,
-                        fillOpacity: 0.25,
-                        fillColor: '#80d8ff',
-                        strokeColor: '#0091ea'
+                        fillOpacity: 0.08,
+                        fillColor: '#00d4ff',
+                        strokeColor: '#00d4ff'
                     });
                     _map.add(_boundaryPolygon);
                 }
@@ -130,9 +130,10 @@
      * 绘制公交线路
      * @param {Array} pathArr - 路径坐标数组
      * @param {string} color - 线路颜色
+     * @param {object} lineMeta - 线路元数据（用于点击显示详情）
      * @returns {AMap.Polyline}
      */
-    MapMod.drawBusLine = function (pathArr, color) {
+    MapMod.drawBusLine = function (pathArr, color, lineMeta) {
         if (!_map || !pathArr || !pathArr.length) return null;
 
         try {
@@ -140,17 +141,150 @@
                 map: _map,
                 path: pathArr,
                 strokeColor: color || '#34495E',
-                strokeOpacity: 0.8,
+                strokeOpacity: 0.9,
                 isOutline: true,
-                outlineColor: 'white',
-                strokeWeight: 2
+                outlineColor: '#1a1a2e',
+                strokeWeight: 3,
+                cursor: 'pointer'
             });
             _drawnPolylines.push(polyline);
+
+            // 存储元数据并绑定点击事件
+            if (lineMeta) {
+                polyline._hnbusMeta = lineMeta;
+                polyline.on('click', function (e) {
+                    MapMod._showLineDetail(polyline, e);
+                });
+                // hover 时加粗
+                polyline.on('mouseover', function () {
+                    polyline.setOptions({ strokeWeight: 5 });
+                });
+                polyline.on('mouseout', function () {
+                    polyline.setOptions({ strokeWeight: 3 });
+                });
+            }
+
             return polyline;
         } catch (e) {
             console.warn('绘制线路失败:', e);
             return null;
         }
+    };
+
+    /**
+     * 点击线路时显示详情信息窗
+     */
+    MapMod._showLineDetail = function (polyline, event) {
+        var meta = polyline._hnbusMeta;
+        if (!meta) return;
+
+        // 关闭之前的信息窗
+        _infoWindows.forEach(function (iw) {
+            try { iw.close(); } catch (e) {}
+        });
+        _infoWindows = [];
+
+        var content = MapMod._buildDetailHTML(meta);
+        var pos = event.lnglat;
+        var infoWindow = new AMap.InfoWindow({
+            content: content,
+            offset: new AMap.Pixel(0, -10),
+            isCustom: false
+        });
+        infoWindow.open(_map, pos);
+        _infoWindows.push(infoWindow);
+    };
+
+    /**
+     * 构建线路详情 HTML（busApi 首末班 + 完整时刻表 + 站点列表）
+     */
+    MapMod._buildDetailHTML = function (meta) {
+        var U = HNBus.Utils;
+        var name = U.escapeHtml(meta.name || '未知线路');
+        var direction = U.escapeHtml(meta.heading || meta.direction || '');
+        var startStation = U.escapeHtml(meta.start || meta.startStation || '');
+        var endStation = U.escapeHtml(meta.end || meta.endStation || '');
+        var stime = U.escapeHtml(meta.stime || '');  // busApi 的 FirstShift
+        var etime = U.escapeHtml(meta.etime || '');  // busApi 的 LastShift
+        var price = U.escapeHtml(meta.price || '');
+        var catLabel = U.escapeHtml(meta.categoryLabel || '');
+        var catColor = meta.categoryColor || '#2980B9';
+        var shiftTimes = meta.shiftTimes || [];
+        var stops = meta.stops || [];
+        var source = meta.source || '';
+
+        // 标题行：线路名(起讫)
+        var titleName = name;
+        if (startStation && endStation) {
+            titleName = name + '(' + startStation + '--' + endStation + ')';
+        }
+
+        var html = '<div class="info-window-content" style="max-width:340px;max-height:420px;overflow-y:auto;">';
+        html += '<h3 style="border-left:3px solid ' + catColor + ';padding-left:6px;margin-bottom:6px;">' +
+                titleName + '</h3>';
+
+        if (direction) {
+            html += '<p><span class="info-label">方向：</span>' + direction + '</p>';
+        }
+        if (startStation || endStation) {
+            html += '<p><span class="info-label">起讫：</span>' +
+                    (startStation || '?') + ' → ' + (endStation || '?') + '</p>';
+        }
+
+        // 首末班（来自 busApi）
+        if (stime || etime) {
+            html += '<p><span class="info-label">首班：</span>' + (stime || '?') +
+                    '　<span class="info-label">末班：</span>' + (etime || '?') + '</p>';
+        }
+
+        if (price) {
+            html += '<p><span class="info-label">票价：</span>' + price + '元</p>';
+        }
+        html += '<p><span class="info-label">分类：</span><span style="color:' + catColor + '">' +
+                catLabel + '</span>';
+        if (source === 'busapi') {
+            html += ' <span style="color:#999;font-size:0.7rem;">(实时数据)</span>';
+        }
+        html += '</p>';
+
+        // 发车时刻表（完整列表）
+        if (shiftTimes && shiftTimes.length > 0) {
+            html += '<div class="station-list" style="margin-top:6px;">' +
+                    '<span class="info-label">发车时刻（' + shiftTimes.length + '班）：</span><br>';
+            var shown = shiftTimes.slice(0, 36);
+            shown.forEach(function (t) {
+                html += '<span class="station-item">' + U.escapeHtml(String(t)) + '</span>';
+            });
+            if (shiftTimes.length > 36) {
+                html += '<span class="station-item">...等' + shiftTimes.length + '班</span>';
+            }
+            html += '</div>';
+        } else if (stime && etime) {
+            // 无时刻表但有首末班：提示
+            html += '<p style="color:#999;font-size:0.75rem;margin:4px 0;">时刻表加载中...</p>';
+        }
+
+        // 站点列表
+        if (stops && stops.length > 0) {
+            html += '<div class="station-list" style="margin-top:6px;">' +
+                    '<span class="info-label">站点（' + stops.length + '站）：</span><br>';
+            stops.forEach(function (stop, idx) {
+                var stopName = '';
+                if (typeof stop === 'string') {
+                    stopName = stop;
+                } else if (stop.name) {
+                    stopName = stop.name;
+                }
+                if (stopName) {
+                    html += '<span class="station-item">' + (idx + 1) + '.' +
+                            U.escapeHtml(stopName) + '</span>';
+                }
+            });
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
     };
 
     /**
@@ -216,6 +350,7 @@
         var html = '<div class="legend-title">图例 (点击切换)</div>';
 
         Object.keys(categories).forEach(function (key) {
+            if (key === 'other') return; // 跳过"其他线路"
             var cat = categories[key];
             html += '<div class="legend-item" data-category="' + key + '">' +
                     '<span class="legend-color" style="background-color:' + cat.base + '"></span>' +

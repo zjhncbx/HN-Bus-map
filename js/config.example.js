@@ -20,7 +20,7 @@ window.APP_CONFIG = {
     mapZoom: 13,
 
     // 地图样式
-    mapStyle: "amap://styles/macaron",
+    mapStyle: "amap://styles/blue",
 
     // 公交实时数据 API 配置（来自 hnbus.py）
     busApi: {

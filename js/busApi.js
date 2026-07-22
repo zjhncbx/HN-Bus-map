@@ -1,112 +1,97 @@
 /**
  * 实时公交 API 模块（从 hnbus.py 移植）
- * 从 www.zjdyx.cn 获取公交线路详情和发车时刻表
- * 注意：直接从前端调用可能存在跨域限制，浏览器需支持 CORS 或使用代理
+ * 通过本地代理 /api/bus/ 访问 zjdyx.cn，绕过 CORS 限制
+ * 使用 python server.py 启动本地代理服务器
  */
 (function () {
     var HNBus = window.HNBus || {};
     var BusApi = {};
 
-    var config = null;
-
     function getConfig() {
-        if (!config && window.APP_CONFIG) {
-            config = window.APP_CONFIG.busApi || {};
-        }
-        return config;
+        return (window.APP_CONFIG && window.APP_CONFIG.busApi) ? window.APP_CONFIG.busApi : {};
+    }
+
+    function getSessionID() {
+        var cfg = getConfig();
+        return cfg.sessionID || '';
     }
 
     /**
-     * 获取线路详情（包含站点列表、首末班、票价等）
-     * 对应 hnbus.py 的 get_bus_line_info()
-     * @param {string|number} gprsId - 线路 GPRS ID（如 "11" 表示主线，"12" 表示支线）
+     * 通用 fetch 封装：先尝试直接请求，失败则走本地代理
+     */
+    function _fetchWithFallback(directUrl, proxyPath, body) {
+        var proxyUrl = window.location.origin + proxyPath;
+
+        // 直接请求（适用于服务器部署场景）
+        function tryDirect() {
+            return fetch(directUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            }).then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            });
+        }
+
+        // 本地代理请求
+        function tryProxy() {
+            var url = proxyUrl + '?gprsId=' + body.gprsId + '&sessionID=' + getSessionID();
+            return fetch(url, { method: 'POST' }).then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            });
+        }
+
+        // 有本地代理时直接走代理
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+            return tryProxy().catch(function () { return null; });
+        }
+
+        // 否则尝试直连，失败走代理
+        return tryDirect().catch(function () {
+            return tryProxy().catch(function () { return null; });
+        });
+    }
+
+    /**
+     * 获取线路详情（站点列表、首末班、票价等）
+     * @param {string|number} gprsId
      * @returns {Promise<object|null>}
      */
     BusApi.fetchBusLineInfo = function (gprsId) {
         var cfg = getConfig();
-        var url = cfg.baseUrl + '/WXMP_BusInfo/GetLineDetialByGprsid?sessionID=' + (cfg.sessionID || '');
+        var directUrl = cfg.baseUrl + '/WXMP_BusInfo/GetLineDetialByGprsid?sessionID=' + (cfg.sessionID || '');
 
-        return fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-                              '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'xweb_xhr': '1',
-                'sec-fetch-site': 'cross-site',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-dest': 'empty',
-                'referer': 'https://servicewechat.com/wx2c04dce60bfff2cb/33/page-frame.html'
-            },
-            body: JSON.stringify({
-                gprsId: String(gprsId),
-                dir: 'true'
-            })
-        })
-        .then(function (response) {
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            return response.json();
-        })
-        .then(function (data) {
-            if (data.Item && data.Item.LineName) {
-                return data;
-            }
-            return null;
-        })
-        .catch(function (err) {
-            console.warn('获取线路 ' + gprsId + ' 数据失败:', err.message);
+        return _fetchWithFallback(directUrl, '/api/bus/line', {
+            gprsId: String(gprsId),
+            dir: 'true'
+        }).then(function (data) {
+            if (data && data.Item && data.Item.LineName) return data;
             return null;
         });
     };
 
     /**
      * 获取发车时刻表
-     * 对应 hnbus.py 的 get_bus_shift_times()
      * @param {string|number} gprsId
      * @returns {Promise<Array>}
      */
     BusApi.fetchBusShiftTimes = function (gprsId) {
         var cfg = getConfig();
-        var url = cfg.baseUrl + '/WXMP_BusInfo/GetLineShiftListByGprsid?sessionID=' + (cfg.sessionID || '');
+        var directUrl = cfg.baseUrl + '/WXMP_BusInfo/GetLineShiftListByGprsid?sessionID=' + (cfg.sessionID || '');
 
-        return fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-                              '(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-                'xweb_xhr': '1',
-                'sec-fetch-site': 'cross-site',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-dest': 'empty',
-                'referer': 'https://servicewechat.com/wx2c04dce60bfff2cb/67/page-frame.html'
-            },
-            body: JSON.stringify({
-                gprsId: String(gprsId),
-                dir: 'false'
-            })
-        })
-        .then(function (response) {
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            return response.json();
-        })
-        .then(function (data) {
-            if (Array.isArray(data) && data.length > 0) {
-                return data;
-            }
-            return [];
-        })
-        .catch(function (err) {
-            console.warn('获取线路 ' + gprsId + ' 发车时间失败:', err.message);
+        return _fetchWithFallback(directUrl, '/api/bus/shift', {
+            gprsId: String(gprsId),
+            dir: 'false'
+        }).then(function (data) {
+            if (Array.isArray(data) && data.length > 0) return data;
             return [];
         });
     };
 
     /**
      * 轮询获取多条线路数据（带延时控制）
-     * @param {Array<number>} lineNumbers - 线路编号列表
-     * @param {function} onProgress - 进度回调 (current, total, lineData)
-     * @param {number} delayMs - 请求间隔（毫秒）
      */
     BusApi.fetchMultipleLines = function (lineNumbers, onProgress, delayMs) {
         delayMs = delayMs || 500;
@@ -130,12 +115,8 @@
                     onProgress(index + 1, lineNumbers.length, data);
                 }
                 index++;
-
-                // 延时后进行下一个请求
                 return new Promise(function (resolve) {
-                    setTimeout(function () {
-                        resolve(fetchNext());
-                    }, delayMs);
+                    setTimeout(function () { resolve(fetchNext()); }, delayMs);
                 });
             });
         }

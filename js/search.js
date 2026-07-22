@@ -94,8 +94,13 @@
                     if (status === 'complete' && result.info === 'OK') {
                         Search._handleResult(result, item);
                     } else {
-                        _failedLines.push(item.display);
-                        console.warn('查询失败: ' + item.display);
+                        // AMap 查询失败，尝试 busApi 兜底
+                        Search._fallbackBusApi(item, function (success) {
+                            if (!success) {
+                                _failedLines.push(item.display);
+                                console.warn('查询失败: ' + item.display);
+                            }
+                        });
                     }
                     _pendingCount--;
                     Search._checkComplete();
@@ -120,32 +125,120 @@
 
         var category = item.category;
 
-        // 始终只取第一条结果（与高德 LineSearch 返回的最佳匹配）
+        // 始终只取第一条结果
         var lineInfo = lineArr[0];
         var pathArr = lineInfo.path;
         var stops = lineInfo.via_stops;
 
         if (!pathArr || !pathArr.length) return;
 
-        // 通过站点坐标检查线路是否在海宁境内，过滤嘉兴其他地区的错误线路
+        // 海宁境内过滤
         if (!Search._hasStationInHaining(stops)) {
             _filteredLines.push(item.display + '(' + lineInfo.name + ')');
             console.warn('线路 ' + lineInfo.name + ' 不在海宁境内，已过滤');
             return;
         }
 
-        // 获取分类颜色
         var color = HNBus.Data.getLineColor(lineInfo.name, category.id);
 
-        // 绘制线路
-        HNBus.Map.drawBusLine(pathArr, color);
-
-        // 构建信息窗体内容
-        var infoHtml = Search._buildInfoWindow(lineInfo, stops, category);
-        var startPos = pathArr[0];
-        if (startPos) {
-            HNBus.Map.showInfoWindow(infoHtml, [startPos.lng, startPos.lat]);
+        // 站点名称列表
+        var stopNames = [];
+        if (stops) {
+            stops.forEach(function (s) { if (s.name) stopNames.push(s.name); });
         }
+
+        // 线路元数据：先用高德数据占位，busApi 数据到达后更新
+        var meta = {
+            name: lineInfo.name,
+            heading: lineInfo.direction || lineInfo.LineHeading || '',
+            start: lineInfo.start_stop || '',
+            end: lineInfo.end_stop || '',
+            stime: lineInfo.stime || '',
+            etime: lineInfo.etime || '',
+            price: lineInfo.basic_price || '',
+            stops: stops || [],
+            shiftTimes: [],
+            categoryLabel: category.label,
+            categoryColor: HNBus.Data.getCategoryColor(category.id),
+            source: 'amap'
+        };
+
+        // 绘制线路
+        HNBus.Map.drawBusLine(pathArr, color, meta);
+
+        // 异步从 busApi 获取首末班+时刻表（轨道交通除外，无 busApi 数据）
+        if (category.id !== 'metro') {
+            Search._enrichFromBusApi(item, lineInfo, meta);
+        }
+    };
+
+    /**
+     * 获取线路的 gprsId（优先使用数据中预存的，否则从名称推算）
+     */
+    Search._getGprsId = function (item, lineInfo, meta) {
+        // 优先使用 busData 中预存的 gprsId
+        if (item.gprsId) return String(item.gprsId);
+
+        // 从名称提取线路编号
+        var lineNum = HNBus.Utils.extractLineNumber(meta.name);
+        if (!lineNum && lineInfo && lineInfo.name) {
+            lineNum = HNBus.Utils.extractLineNumber(lineInfo.name);
+        }
+        if (!lineNum) return null;
+
+        return String(lineNum < 10000 ? parseInt(lineNum + '1', 10) : lineNum);
+    };
+
+    /**
+     * 从 busApi 获取线路详情（首末班、时刻表）并更新 meta
+     */
+    Search._enrichFromBusApi = function (item, lineInfo, meta) {
+        var gprsId = Search._getGprsId(item, lineInfo, meta);
+        if (!gprsId) return;
+
+        // 并行获取线路详情 + 时刻表
+        var detailPromise = HNBus.BusApi.fetchBusLineInfo(gprsId);
+        var shiftPromise = HNBus.BusApi.fetchBusShiftTimes(gprsId);
+
+        Promise.all([detailPromise, shiftPromise]).then(function (results) {
+            var detailData = results[0];
+            var times = results[1];
+
+            if (detailData && detailData.Item) {
+                var d = detailData.Item;
+                // busApi 数据覆盖高德数据
+                if (d.LineName)       meta.name = d.LineName;
+                if (d.LineHeading)    meta.heading = d.LineHeading;
+                if (d.LineStartStation) meta.start = d.LineStartStation;
+                if (d.LineEndStation)   meta.end = d.LineEndStation;
+                if (d.FirstShift)     meta.stime = d.FirstShift;
+                if (d.LastShift)      meta.etime = d.LastShift;
+                if (d.BasicPrice)     meta.price = d.BasicPrice;
+                meta.source = 'busapi';
+
+                // 用 busApi 站点数据（含坐标）
+                if (d.StationList && d.StationList.length) {
+                    var busStops = [];
+                    d.StationList.forEach(function (s) {
+                        if (s.Name) {
+                            busStops.push({
+                                name: s.Name,
+                                lat: s.lat,
+                                lng: s.lng,
+                                index: s.Index
+                            });
+                        }
+                    });
+                    if (busStops.length) meta.stops = busStops;
+                }
+            }
+
+            if (times && times.length > 0) {
+                meta.shiftTimes = times;
+            }
+        }).catch(function (err) {
+            console.warn('busApi 数据获取失败: ' + meta.name, err);
+        });
     };
 
     /**
@@ -281,6 +374,98 @@
             // 显示图例
             HNBus.Map.createLegend();
         }
+    };
+
+    /**
+     * AMap 查询失败时通过 busApi 兜底获取站点并绘制
+     */
+    Search._fallbackBusApi = function (item, callback) {
+        var gprsId = Search._getGprsId(item, null, { name: item.display });
+        if (!gprsId) {
+            callback(false);
+            return;
+        }
+
+        // 并行获取线路详情 + 时刻表
+        Promise.all([
+            HNBus.BusApi.fetchBusLineInfo(gprsId),
+            HNBus.BusApi.fetchBusShiftTimes(gprsId)
+        ]).then(function (results) {
+            var data = results[0];
+            var times = results[1];
+
+            if (!data || !data.Item || !data.Item.StationList || !data.Item.StationList.length) {
+                callback(false);
+                return;
+            }
+
+            var itemData = data.Item;
+            var stations = itemData.StationList;
+
+            // WGS84 → GCJ02 坐标转换，构建路径 + 站点列表
+            var pathArr = [];
+            var busStops = [];
+            for (var i = 0; i < stations.length; i++) {
+                var s = stations[i];
+                if (s.lat != null && s.lng != null) {
+                    var gcj = HNBus.CoordTransform.wgs84ToGcj02(s.lat, s.lng);
+                    if (gcj.lat != null && gcj.lng != null) {
+                        pathArr.push([gcj.lng, gcj.lat]);
+                    }
+                }
+                if (s.Name) {
+                    busStops.push({ name: s.Name, lat: s.lat, lng: s.lng, index: s.Index });
+                }
+            }
+
+            if (pathArr.length < 2) {
+                callback(false);
+                return;
+            }
+
+            // 海宁境内检查
+            var hasInHN = false;
+            for (var j = 0; j < pathArr.length; j++) {
+                var pt = pathArr[j];
+                if (pt[0] >= 120.15 && pt[0] <= 121.05 &&
+                    pt[1] >= 30.10 && pt[1] <= 30.65) {
+                    hasInHN = true;
+                    break;
+                }
+            }
+            if (!hasInHN) {
+                _filteredLines.push(item.display + '(' + itemData.LineName + ')');
+                callback(false);
+                return;
+            }
+
+            var category = item.category;
+            var color = HNBus.Data.getLineColor(itemData.LineName || item.display, category.id);
+
+            var meta = {
+                name: itemData.LineName || item.display,
+                heading: itemData.LineHeading || '',
+                start: itemData.LineStartStation || '',
+                end: itemData.LineEndStation || '',
+                stime: itemData.FirstShift || '',
+                etime: itemData.LastShift || '',
+                price: itemData.BasicPrice || '',
+                stops: busStops,
+                shiftTimes: times || [],
+                categoryLabel: category.label,
+                categoryColor: HNBus.Data.getCategoryColor(category.id),
+                source: 'busapi'
+            };
+
+            HNBus.Map.drawBusLine(pathArr, color, meta);
+
+            console.log('busApi 兜底成功: ' + item.display + ' -> ' + meta.name +
+                        ' (' + meta.stime + '-' + meta.etime + ', ' + meta.shiftTimes.length + '班)');
+            callback(true);
+        }).catch(function (err) {
+            console.warn('busApi 兜底失败: ' + item.display, err);
+            callback(false);
+        });
     };
 
     // 导出
