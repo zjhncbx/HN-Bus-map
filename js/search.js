@@ -8,7 +8,8 @@
 
     var _pendingCount = 0;
     var _totalCount = 0;
-    var _errorCount = 0;
+    var _failedLines = [];   // 收集失败的线路名称
+    var _filteredLines = []; // 在海宁境外被过滤的线路
 
     /**
      * 主查询入口
@@ -42,7 +43,8 @@
 
         _pendingCount = 0;
         _totalCount = checkedLines.length;
-        _errorCount = 0;
+        _failedLines = [];
+        _filteredLines = [];
 
         // 按城市分组
         var groupedByCity = {};
@@ -90,10 +92,10 @@
 
                 searcher.search(searchName, function (status, result) {
                     if (status === 'complete' && result.info === 'OK') {
-                        Search._handleResult(result, item.category);
+                        Search._handleResult(result, item);
                     } else {
-                        _errorCount++;
-                        console.warn('查询失败: ' + item.display, result);
+                        _failedLines.push(item.display);
+                        console.warn('查询失败: ' + item.display);
                     }
                     _pendingCount--;
                     Search._checkComplete();
@@ -101,7 +103,7 @@
             });
         } catch (e) {
             console.error('创建搜索失败:', e);
-            _errorCount += lines.length;
+            lines.forEach(function (item) { _failedLines.push(item.display); });
             _pendingCount -= lines.length;
             Search._checkComplete();
         }
@@ -112,9 +114,11 @@
      * 始终只取第一条结果，避免显示多条无关线路
      * 同时过滤在海宁行政区划以外的错误线路
      */
-    Search._handleResult = function (data, category) {
+    Search._handleResult = function (data, item) {
         var lineArr = data.lineInfo;
         if (!lineArr || !lineArr.length) return;
+
+        var category = item.category;
 
         // 始终只取第一条结果（与高德 LineSearch 返回的最佳匹配）
         var lineInfo = lineArr[0];
@@ -123,10 +127,10 @@
 
         if (!pathArr || !pathArr.length) return;
 
-        // 检查线路是否有站点/路径在海宁境内，过滤嘉兴其他地区的错误线路
-        if (!HNBus.Map.hasPointInHaining(pathArr, 0)) {
+        // 通过站点坐标检查线路是否在海宁境内，过滤嘉兴其他地区的错误线路
+        if (!Search._hasStationInHaining(stops)) {
+            _filteredLines.push(item.display + '(' + lineInfo.name + ')');
             console.warn('线路 ' + lineInfo.name + ' 不在海宁境内，已过滤');
-            _errorCount++;
             return;
         }
 
@@ -142,6 +146,35 @@
         if (startPos) {
             HNBus.Map.showInfoWindow(infoHtml, [startPos.lng, startPos.lat]);
         }
+    };
+
+    /**
+     * 检查站点列表中是否有落在海宁境内的站点
+     * 使用 bounding box 快速判断（海宁范围：120.15~121.05, 30.10~30.65）
+     */
+    Search._hasStationInHaining = function (stops) {
+        if (!stops || !stops.length) return true; // 无站点数据时放行
+
+        var HN = {
+            minLng: 120.15, maxLng: 121.05,
+            minLat: 30.10,  maxLat: 30.65
+        };
+
+        for (var i = 0; i < stops.length; i++) {
+            var loc = stops[i].location;
+            if (!loc) continue;
+
+            // AMap.LngLat: .lng/.lat 或 .getLng()/.getLat()
+            var lng = typeof loc.getLng === 'function' ? loc.getLng() : loc.lng;
+            var lat = typeof loc.getLat === 'function' ? loc.getLat() : loc.lat;
+
+            if (lng != null && lat != null &&
+                lng >= HN.minLng && lng <= HN.maxLng &&
+                lat >= HN.minLat && lat <= HN.maxLat) {
+                return true;
+            }
+        }
+        return false;
     };
 
     /**
@@ -219,15 +252,28 @@
             HNBus.UI.hideLoading();
             HNBus.Map.fitView();
 
-            var successCount = _totalCount - _errorCount;
+            var failedCount = _failedLines.length;
+            var filteredCount = _filteredLines.length;
+            var successCount = _totalCount - failedCount - filteredCount;
 
             if (successCount === 0 && _totalCount > 0) {
-                HNBus.Utils.showToast('未找到匹配的公交线路，请检查线路号码', 'error');
-            } else if (_errorCount > 0) {
-                HNBus.Utils.showToast(
-                    '找到 ' + successCount + ' 条线路，' + _errorCount + ' 条查询失败',
-                    'warning'
-                );
+                var msg = '未找到匹配的公交线路';
+                if (_failedLines.length > 0) {
+                    msg += '，失败: ' + _failedLines.slice(0, 8).join('、');
+                    if (_failedLines.length > 8) msg += '等' + _failedLines.length + '条';
+                }
+                HNBus.Utils.showToast(msg, 'error', 5000);
+            } else if (failedCount > 0 || filteredCount > 0) {
+                var parts = ['成功 ' + successCount + ' 条'];
+                if (failedCount > 0) {
+                    parts.push('失败: ' + _failedLines.slice(0, 5).join('、'));
+                    if (_failedLines.length > 5) parts[parts.length - 1] += '等' + _failedLines.length + '条';
+                }
+                if (filteredCount > 0) {
+                    parts.push('境外过滤: ' + _filteredLines.slice(0, 3).join('、'));
+                    if (_filteredLines.length > 3) parts[parts.length - 1] += '等' + _filteredLines.length + '条';
+                }
+                HNBus.Utils.showToast(parts.join('，'), 'warning', 6000);
             } else {
                 HNBus.Utils.showToast('成功查询 ' + successCount + ' 条线路', 'success');
             }

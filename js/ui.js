@@ -24,25 +24,33 @@
         _panelEl.className = 'bus-panel';
         _panelEl.id = 'bus-query-panel';
 
-        // 折叠按钮
+        // 侧边滑动折叠按钮
         var toggleBtn = document.createElement('button');
         toggleBtn.className = 'panel-toggle-btn';
         toggleBtn.title = '折叠/展开';
         toggleBtn.innerHTML = '<span class="arrow">◀</span>';
         _panelEl.appendChild(toggleBtn);
 
-        // 标题
-        var title = document.createElement('div');
-        title.className = 'panel-title';
-        title.textContent = '海宁公共交通线路查询 ©HNMRXZ';
-        _panelEl.appendChild(title);
+        // 顶部标题栏（含折叠按钮）
+        var headerBar = document.createElement('div');
+        headerBar.className = 'panel-header-bar';
+        headerBar.innerHTML =
+            '<span class="panel-title">海宁公共交通线路查询 ©HNMRXZ</span>' +
+            '<button class="panel-collapse-btn" id="panel-collapse-btn" title="折叠面板">−</button>';
+        _panelEl.appendChild(headerBar);
+
+        // 面板内容区
+        var contentWrap = document.createElement('div');
+        contentWrap.className = 'panel-content';
+        contentWrap.id = 'panel-content-wrap';
 
         if (isMobile) {
-            UI._buildMobileContent(_panelEl);
+            UI._buildMobileContent(contentWrap);
         } else {
-            UI._buildDesktopContent(_panelEl);
+            UI._buildDesktopContent(contentWrap);
         }
 
+        _panelEl.appendChild(contentWrap);
         document.body.appendChild(_panelEl);
 
         // 绑定事件
@@ -158,9 +166,12 @@
         var header = document.createElement('div');
         header.className = 'category-header';
         header.setAttribute('data-category-id', category.id);
-        header.innerHTML = '<span>' + category.label + '</span>' +
+        header.innerHTML = '<span class="category-label">' + category.label + '</span>' +
+                          '<span style="display:flex;align-items:center">' +
                           '<span class="badge" data-category-count="' + category.id + '">0/' +
-                          category.buses.length + '</span>';
+                          category.buses.length + '</span>' +
+                          '<span class="collapse-arrow" data-collapse="' + category.id + '">▼</span>' +
+                          '</span>';
         container.appendChild(header);
 
         // 复选框列表
@@ -187,7 +198,7 @@
      * 绑定事件（委托模式）
      */
     UI._bindEvents = function () {
-        // 面板折叠/展开
+        // 侧边按钮：面板滑动折叠/展开
         var toggleBtn = _panelEl.querySelector('.panel-toggle-btn');
         if (toggleBtn) {
             toggleBtn.addEventListener('click', function () {
@@ -199,17 +210,48 @@
             });
         }
 
-        // 事件委托：类别标题 → 全选/取消、复选框 → 更新计数、按钮
+        // 顶部按钮：面板内容折叠/展开
+        var collapseBtn = document.getElementById('panel-collapse-btn');
+        if (collapseBtn) {
+            collapseBtn.addEventListener('click', function () {
+                var content = document.getElementById('panel-content-wrap');
+                var panel = document.getElementById('bus-query-panel');
+                if (content.style.display === 'none') {
+                    content.style.display = '';
+                    collapseBtn.textContent = '−';
+                    collapseBtn.title = '折叠面板';
+                    panel.classList.remove('content-collapsed');
+                } else {
+                    content.style.display = 'none';
+                    collapseBtn.textContent = '+';
+                    collapseBtn.title = '展开面板';
+                    panel.classList.add('content-collapsed');
+                }
+            });
+        }
+
+        // 事件委托：折叠箭头 → 折叠/展开，标题 → 全选/取消，复选框 → 更新计数
         _panelEl.addEventListener('click', function (e) {
             var target = e.target;
 
-            // 类别标题 → 切换全选
+            // 折叠箭头 → 切换分类折叠
+            if (target.classList.contains('collapse-arrow')) {
+                var group = target.closest('.category-group');
+                if (group) {
+                    group.classList.toggle('collapsed');
+                }
+                return;
+            }
+
+            // 类别标题（非箭头区域）→ 切换全选
             if (target.classList.contains('category-header') ||
-                target.parentElement && target.parentElement.classList.contains('category-header')) {
+                target.closest('.category-header') && !target.closest('.collapse-arrow')) {
 
                 var header = target.closest('.category-header');
-                var categoryId = header.getAttribute('data-category-id');
-                UI.toggleCategory(categoryId);
+                if (header) {
+                    var categoryId = header.getAttribute('data-category-id');
+                    UI.toggleCategory(categoryId);
+                }
                 return;
             }
 
