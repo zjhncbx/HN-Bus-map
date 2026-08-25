@@ -136,8 +136,6 @@ HNBus/
 
 ## 数据更新
 
-线路数据基于 `quick_scan.py` 扫描 zjdyx.cn API 结果（2026-07-22，103 条）。
-
 更新线路数据：
 ```bash
 python quick_scan.py          # 扫描全部线路 → bus_lines_found.json
